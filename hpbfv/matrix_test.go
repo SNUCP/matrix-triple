@@ -46,7 +46,7 @@ var mulParamSet = []hpbfv.ParametersLiteral{
 }
 
 func TestMatMul(t *testing.T) {
-	params := hpbfv.NewParametersFromLiteral(hpbfv.HPN14D13T128)
+	params := hpbfv.NewParametersFromLiteral(hpbfv.HPN13D10T128)
 
 	dims := 2
 	pack := params.Slots() / dims
@@ -173,7 +173,7 @@ func BenchmarkMatMulAuth(b *testing.B) {
 
 		eval := hpbfv.NewMatrixEvaluator(params, rlk, rks)
 
-		b.Run(fmt.Sprintf("MatMulAuth/d=%v", dim), func(b *testing.B) {
+		b.Run(fmt.Sprintf("MatMulAuth/d=%v/Pack=%v", dim, ctA.Pack), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				eval.Mul(ctA, ctB, ctC)
 				for i := range ctC.Value {
