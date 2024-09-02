@@ -1,0 +1,6 @@
+Initial Setup
+1. Run command "go mod vendor"
+
+Run Test & Write Test
+1. Modify "./hpbfv/hpbfv_test.go" file
+2. Run command "go test"
