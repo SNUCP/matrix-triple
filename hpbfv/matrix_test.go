@@ -3,6 +3,7 @@ package hpbfv_test
 import (
 	"fmt"
 	"hp-bfv/hpbfv"
+	"hp-bfv/rlwe/ringqp"
 	"math/big"
 	"testing"
 
@@ -145,9 +146,14 @@ func BenchmarkMatMulAuth(b *testing.B) {
 	prng, _ := utils.NewPRNG()
 	us := ring.NewUniformSampler(prng, params.RingQ())
 
-	ctMAC := hpbfv.NewCiphertext(params, 1)
-	us.Read(ctMAC.Value[0])
-	us.Read(ctMAC.Value[1])
+	ctAlpha := hpbfv.NewCiphertext(params, 1)
+	us.Read(ctAlpha.Value[0])
+	us.Read(ctAlpha.Value[1])
+
+	ctAlphaHoisted := []ringqp.Poly{
+		{Q: params.RingQ().NewPoly(), P: params.RingQMul().NewPoly()},
+		{Q: params.RingQ().NewPoly(), P: params.RingQMul().NewPoly()},
+	}
 
 	kg := hpbfv.NewKeyGenerator(params)
 	sk := kg.GenSecretKey()
@@ -176,8 +182,12 @@ func BenchmarkMatMulAuth(b *testing.B) {
 		b.Run(fmt.Sprintf("MatMulAuth/d=%v/Pack=%v", dim, ctA.Pack), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				eval.Mul(ctA, ctB, ctC)
-				for i := range ctC.Value {
-					cEval.MulAndRelin(ctC.Value[i], ctMAC, rlk, ctC.Value[i])
+
+				cEval.RescaleQMul(ctAlpha, ctAlphaHoisted)
+				for j := 0; j < dim; j++ {
+					cEval.MulAndRelinHoisted(ctAlphaHoisted, ctA.Value[j], rlk, ctA.Value[j])
+					cEval.MulAndRelinHoisted(ctAlphaHoisted, ctB.Value[j], rlk, ctB.Value[j])
+					cEval.MulAndRelinHoisted(ctAlphaHoisted, ctC.Value[j], rlk, ctC.Value[j])
 				}
 			}
 		})

@@ -5,6 +5,7 @@ import (
 
 	"hp-bfv/ring"
 	"hp-bfv/rlwe"
+	"hp-bfv/rlwe/ringqp"
 	"hp-bfv/utils"
 )
 
@@ -93,13 +94,32 @@ func (eval *Evaluator) permute(ct0 *Ciphertext, generator uint64, switchKey *rlw
 	ringQ := eval.params.RingQ()
 
 	eval.ksw.GadgetProduct(ct0.Value[1].Level(), ct0.Value[1], switchKey.GadgetCiphertext, eval.poolKeySwitch)
-	ringQ.Reduce(eval.poolKeySwitch.Value[0], eval.poolKeySwitch.Value[0])
-	ringQ.Reduce(eval.poolKeySwitch.Value[1], eval.poolKeySwitch.Value[1])
 
 	ringQ.Add(eval.poolKeySwitch.Value[0], ct0.Value[0], eval.poolKeySwitch.Value[0])
 
 	ringQ.Permute(eval.poolKeySwitch.Value[0], generator, ctOut.Value[0])
 	ringQ.Permute(eval.poolKeySwitch.Value[1], generator, ctOut.Value[1])
+}
+
+// RescaleQMul extends ct0 to the (Q, QMul) ring for hoisted multiplication.
+func (eval *Evaluator) RescaleQMul(ct0 *Ciphertext, ctOut []ringqp.Poly) {
+	ringQ := eval.params.RingQ()
+	ringQMul := eval.params.RingQMul()
+	levelQ := len(ringQ.Modulus) - 1
+	levelQMul := len(ringQMul.Modulus) - 1
+
+	for i := 0; i < 2; i++ {
+		ringQ.MulScalarBigint(ct0.Value[i], ringQMul.ModulusAtLevel[levelQ], ctOut[i].Q)
+		ctOut[i].P.Zero()
+		eval.conv.ModDownQPtoQ(levelQ, levelQMul, ctOut[i].Q, ctOut[i].P, ctOut[i].P)
+		eval.conv.ModUpPtoQ(levelQMul, levelQ, ctOut[i].P, ctOut[i].Q)
+
+		ringQ.NTT(ctOut[i].Q, ctOut[i].Q)
+		ringQMul.NTT(ctOut[i].P, ctOut[i].P)
+
+		ringQ.MForm(ctOut[i].Q, ctOut[i].Q)
+		ringQMul.MForm(ctOut[i].P, ctOut[i].P)
+	}
 }
 
 // tensorAndRescale computes (ct0 x ct1) * (t/Q) and stores the result in ctOut.
@@ -162,7 +182,45 @@ func (eval *Evaluator) tensorAndRescale(ct0, ct1, ctOut *rlwe.Ciphertext) {
 		ringQ.MulScalarBigint(eval.poolQ[i+4], params.B(), eval.poolQ[i+4])
 		ringQ.Sub(ctOut.Value[i], eval.poolQ[i+4], ctOut.Value[i])
 	}
+}
 
+// tensorAndRescaleHoisted computes (ct0 x ct1) * (t/Q) and stores the result in ctOut.
+// ct0 should be created with ExtendQMulLeft and ct1 with ExtendQMulRight.
+func (eval *Evaluator) tensorAndRescaleHoisted(ct0 []ringqp.Poly, ct1, ctOut *rlwe.Ciphertext) {
+	ringQ := eval.params.RingQ()
+	ringQMul := eval.params.RingQMul()
+	levelQ := len(ringQ.Modulus) - 1
+	levelQMul := len(ringQMul.Modulus) - 1
+
+	for i := 2; i < 4; i++ {
+		eval.poolQ[i].Copy(ct1.Value[i-2])
+		eval.conv.ModUpQtoP(levelQ, levelQMul, eval.poolQ[i], eval.poolQMul[i])
+
+		ringQ.NTT(eval.poolQ[i], eval.poolQ[i])
+		ringQMul.NTT(eval.poolQMul[i], eval.poolQMul[i])
+	}
+
+	ringQ.MulCoeffsMontgomery(ct0[0].Q, eval.poolQ[0], eval.poolQ[4])
+	ringQMul.MulCoeffsMontgomery(ct0[0].P, eval.poolQMul[0], eval.poolQMul[4])
+
+	ringQ.MulCoeffsMontgomery(ct0[0].Q, eval.poolQ[1], eval.poolQ[5])
+	ringQMul.MulCoeffsMontgomery(ct0[0].P, eval.poolQMul[1], eval.poolQMul[5])
+
+	ringQ.MulCoeffsMontgomeryAndAdd(ct0[1].Q, eval.poolQ[0], eval.poolQ[5])
+	ringQMul.MulCoeffsMontgomeryAndAdd(ct0[1].P, eval.poolQMul[0], eval.poolQMul[5])
+
+	ringQ.MulCoeffsMontgomery(ct0[1].Q, eval.poolQ[0], eval.poolQ[6])
+	ringQMul.MulCoeffsMontgomery(ct0[1].P, eval.poolQMul[0], eval.poolQMul[6])
+
+	for i := 0; i < 3; i++ {
+		ringQ.InvNTT(eval.poolQ[i+4], eval.poolQ[i+4])
+		ringQMul.InvNTT(eval.poolQMul[i+4], eval.poolQMul[i+4])
+		eval.conv.ModDownQPtoQ(levelQ, levelQMul, eval.poolQ[i+4], eval.poolQMul[i+4], eval.poolQ[i+4])
+
+		ringQ.MultByMonomial(eval.poolQ[i+4], eval.params.Slots(), ctOut.Value[i])
+		ringQ.MulScalarBigint(eval.poolQ[i+4], eval.params.B(), eval.poolQ[i+4])
+		ringQ.Sub(ctOut.Value[i], eval.poolQ[i+4], ctOut.Value[i])
+	}
 }
 
 // Add adds op0 to op1 and returns the result in ctOut.
@@ -260,4 +318,11 @@ func (eval *Evaluator) MulAndRelinNew(op0, op1 *Ciphertext, rlk *rlwe.Relineariz
 	ctOut = NewCiphertext(eval.params, 1)
 	eval.MulAndRelin(op0, op1, rlk, ctOut)
 	return
+}
+
+// MulAndRelinHoisted multiplies op0 by op1 and returns the result in ctOut.
+// op0 should be created with ExtendQMulLeft and op1 with ExtendQMulRight.
+func (eval *Evaluator) MulAndRelinHoisted(op0 []ringqp.Poly, op1 *Ciphertext, rlk *rlwe.RelinearizationKey, ctOut *Ciphertext) {
+	eval.tensorAndRescaleHoisted(op0, op1.Ciphertext, eval.poolCtMul.Ciphertext)
+	eval.relinearize(eval.poolCtMul, rlk, ctOut)
 }

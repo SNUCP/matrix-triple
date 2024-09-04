@@ -19,7 +19,7 @@ type MatrixEvaluator struct {
 	poolCMul [4]*ringqp.Poly
 	poolC    [4]*ring.Poly
 
-	poolKeySwitch [2]*rlwe.Ciphertext
+	poolKeySwitch [3]*rlwe.Ciphertext
 
 	permuteQIdx    map[uint64][]uint64
 	permuteQMulIdx map[uint64][]uint64
@@ -57,7 +57,8 @@ func NewMatrixEvaluator(params Parameters, rlk *rlwe.RelinearizationKey, matRks 
 		params.RingQ().NewPoly(), params.RingQ().NewPoly(),
 	}
 
-	eval.poolKeySwitch = [2]*rlwe.Ciphertext{
+	eval.poolKeySwitch = [3]*rlwe.Ciphertext{
+		rlwe.NewCiphertext(params.Parameters, 1, params.MaxLevel()),
 		rlwe.NewCiphertext(params.Parameters, 1, params.MaxLevel()),
 		rlwe.NewCiphertext(params.Parameters, 1, params.MaxLevel()),
 	}
@@ -135,8 +136,8 @@ func (eval *MatrixEvaluator) Mul(ctA, ctB, ctC *MatrixCiphertext) {
 		}
 	}
 
-	QMargin := math.MaxUint64 / (3 * utils.MaxSliceUint64(ringQ.Modulus))
-	QMulMargin := math.MaxUint64 / (3 * utils.MaxSliceUint64(ringQMul.Modulus))
+	QMargin := int(math.Exp2(64)/float64(utils.MaxSliceUint64(ringQ.Modulus))) >> 1
+	QMulMargin := int(math.Exp2(64)/float64(utils.MaxSliceUint64(ringQMul.Modulus))) >> 1
 
 	// Compute the multiplication
 	for i := 0; i < dim; i++ {
@@ -148,12 +149,13 @@ func (eval *MatrixEvaluator) Mul(ctA, ctB, ctC *MatrixCiphertext) {
 			eval.poolC[j].Zero()
 		}
 
-		var reduce uint64
+		var reduce int
 		for j := 0; j < dim; j++ {
-			ringQ.PermuteNTTWithIndexLvl(levelQ, eval.poolBMul[(dim+i-j)%dim][0].Q, eval.permuteQIdx[galEl], eval.poolRot[0].Q)
-			ringQ.PermuteNTTWithIndexLvl(levelQ, eval.poolBMul[(dim+i-j)%dim][1].Q, eval.permuteQIdx[galEl], eval.poolRot[1].Q)
-			ringQMul.PermuteNTTWithIndexLvl(levelQMul, eval.poolBMul[(dim+i-j)%dim][0].P, eval.permuteQMulIdx[galEl], eval.poolRot[0].P)
-			ringQMul.PermuteNTTWithIndexLvl(levelQMul, eval.poolBMul[(dim+i-j)%dim][1].P, eval.permuteQMulIdx[galEl], eval.poolRot[1].P)
+			bIdx := (dim + i - j) % dim
+			ringQ.PermuteNTTWithIndexLvl(levelQ, eval.poolBMul[bIdx][0].Q, eval.permuteQIdx[galEl], eval.poolRot[0].Q)
+			ringQ.PermuteNTTWithIndexLvl(levelQ, eval.poolBMul[bIdx][1].Q, eval.permuteQIdx[galEl], eval.poolRot[1].Q)
+			ringQMul.PermuteNTTWithIndexLvl(levelQMul, eval.poolBMul[bIdx][0].P, eval.permuteQMulIdx[galEl], eval.poolRot[0].P)
+			ringQMul.PermuteNTTWithIndexLvl(levelQMul, eval.poolBMul[bIdx][1].P, eval.permuteQMulIdx[galEl], eval.poolRot[1].P)
 
 			ringQ.MulCoeffsMontgomeryConstantAndAddNoMod(eval.poolAMul[j][0].Q, eval.poolRot[0].Q, eval.poolCMul[0].Q)
 			ringQMul.MulCoeffsMontgomeryConstantAndAddNoMod(eval.poolAMul[j][0].P, eval.poolRot[0].P, eval.poolCMul[0].P) // 1
@@ -166,29 +168,33 @@ func (eval *MatrixEvaluator) Mul(ctA, ctB, ctC *MatrixCiphertext) {
 
 			ringQ.MulCoeffsMontgomeryConstantAndAddNoMod(eval.poolAMul[j][1].Q, eval.poolRot[1].Q, eval.poolCMul[3].Q)
 			ringQMul.MulCoeffsMontgomeryConstantAndAddNoMod(eval.poolAMul[j][1].P, eval.poolRot[1].P, eval.poolCMul[3].P) // s*rot(s)
-			reduce++
 
 			if reduce%QMargin == QMargin-1 {
-				for j := 0; j < 4; j++ {
-					ringQ.Reduce(eval.poolCMul[j].Q, eval.poolCMul[j].Q)
-				}
+				ringQ.Reduce(eval.poolCMul[0].Q, eval.poolCMul[0].Q)
+				ringQ.Reduce(eval.poolCMul[1].Q, eval.poolCMul[1].Q)
+				ringQ.Reduce(eval.poolCMul[2].Q, eval.poolCMul[2].Q)
+				ringQ.Reduce(eval.poolCMul[3].Q, eval.poolCMul[3].Q)
 			}
 			if reduce%QMulMargin == QMulMargin-1 {
-				for j := 0; j < 4; j++ {
-					ringQMul.Reduce(eval.poolCMul[j].P, eval.poolCMul[j].P)
-				}
+				ringQMul.Reduce(eval.poolCMul[0].P, eval.poolCMul[0].P)
+				ringQMul.Reduce(eval.poolCMul[1].P, eval.poolCMul[1].P)
+				ringQMul.Reduce(eval.poolCMul[2].P, eval.poolCMul[2].P)
+				ringQMul.Reduce(eval.poolCMul[3].P, eval.poolCMul[3].P)
 			}
+			reduce++
 		}
 
 		if reduce%QMargin != 0 {
-			for j := 0; j < 4; j++ {
-				ringQ.Reduce(eval.poolCMul[j].Q, eval.poolCMul[j].Q)
-			}
+			ringQ.Reduce(eval.poolCMul[0].Q, eval.poolCMul[0].Q)
+			ringQ.Reduce(eval.poolCMul[1].Q, eval.poolCMul[1].Q)
+			ringQ.Reduce(eval.poolCMul[2].Q, eval.poolCMul[2].Q)
+			ringQ.Reduce(eval.poolCMul[3].Q, eval.poolCMul[3].Q)
 		}
 		if reduce%QMulMargin != 0 {
-			for j := 0; j < 4; j++ {
-				ringQMul.Reduce(eval.poolCMul[j].P, eval.poolCMul[j].P)
-			}
+			ringQMul.Reduce(eval.poolCMul[0].P, eval.poolCMul[0].P)
+			ringQMul.Reduce(eval.poolCMul[1].P, eval.poolCMul[1].P)
+			ringQMul.Reduce(eval.poolCMul[2].P, eval.poolCMul[2].P)
+			ringQMul.Reduce(eval.poolCMul[3].P, eval.poolCMul[3].P)
 		}
 
 		for j := 0; j < 4; j++ {
@@ -206,17 +212,22 @@ func (eval *MatrixEvaluator) Mul(ctA, ctB, ctC *MatrixCiphertext) {
 		ctC.Value[i].Value[1].Copy(eval.poolC[1])
 
 		// KeySwitch rot(s) -> (1, s)
-		eval.eval.ksw.GadgetProduct(levelQ, eval.poolC[2], eval.rks.Keys[galEl].GadgetCiphertext, eval.poolKeySwitch[0])
-		ringQ.Add(ctC.Value[i].Value[0], eval.poolKeySwitch[0].Value[0], ctC.Value[i].Value[0])
-		ringQ.Add(ctC.Value[i].Value[1], eval.poolKeySwitch[0].Value[1], ctC.Value[i].Value[1])
+		eval.eval.ksw.GadgetProductNoPNoModDown(levelQ, eval.poolC[2], eval.rks.Keys[galEl].GadgetCiphertext, eval.poolKeySwitch[0])
 
 		// KeySwitch s*rot(s) -> (s, s^2)
-		eval.eval.ksw.GadgetProduct(levelQ, eval.poolC[3], eval.rks.Keys[galEl].GadgetCiphertext, eval.poolKeySwitch[0])
-		ringQ.Add(ctC.Value[i].Value[1], eval.poolKeySwitch[0].Value[0], ctC.Value[i].Value[1])
+		eval.eval.ksw.GadgetProductNoPNoModDown(levelQ, eval.poolC[3], eval.rks.Keys[galEl].GadgetCiphertext, eval.poolKeySwitch[1])
+		ringQ.Add(eval.poolKeySwitch[1].Value[0], eval.poolKeySwitch[0].Value[1], eval.poolKeySwitch[0].Value[1])
 
 		// KeySwitch s^2 -> (1, s)
-		eval.eval.ksw.GadgetProduct(levelQ, eval.poolKeySwitch[0].Value[1], eval.rlk.Keys[0].GadgetCiphertext, eval.poolKeySwitch[1])
-		ringQ.Add(ctC.Value[i].Value[0], eval.poolKeySwitch[1].Value[0], ctC.Value[i].Value[0])
-		ringQ.Add(ctC.Value[i].Value[1], eval.poolKeySwitch[1].Value[1], ctC.Value[i].Value[1])
+		ringQ.InvNTT(eval.poolKeySwitch[1].Value[1], eval.poolKeySwitch[1].Value[1])
+		eval.eval.ksw.GadgetProductNoPNoModDown(levelQ, eval.poolKeySwitch[1].Value[1], eval.rlk.Keys[0].GadgetCiphertext, eval.poolKeySwitch[2])
+		ringQ.Add(eval.poolKeySwitch[2].Value[0], eval.poolKeySwitch[0].Value[0], eval.poolKeySwitch[0].Value[0])
+		ringQ.Add(eval.poolKeySwitch[2].Value[1], eval.poolKeySwitch[0].Value[1], eval.poolKeySwitch[0].Value[1])
+
+		ringQ.InvNTT(eval.poolKeySwitch[0].Value[0], eval.poolKeySwitch[0].Value[0])
+		ringQ.InvNTT(eval.poolKeySwitch[0].Value[1], eval.poolKeySwitch[0].Value[1])
+
+		ringQ.Add(ctC.Value[i].Value[0], eval.poolKeySwitch[0].Value[0], ctC.Value[i].Value[0])
+		ringQ.Add(ctC.Value[i].Value[1], eval.poolKeySwitch[0].Value[1], ctC.Value[i].Value[1])
 	}
 }

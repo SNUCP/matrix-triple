@@ -23,6 +23,8 @@ func (eval *Evaluator) GadgetProduct(levelQ int, cx *ring.Poly, gadgetCt GadgetC
 
 	if levelP > 0 {
 		eval.GadgetProductNoModDown(levelQ, cx, gadgetCt, ctTmp)
+	} else if levelP == -1 && eval.params.pow2Base == 0 {
+		eval.GadgetProductNoPNoModDown(levelQ, cx, gadgetCt, ct)
 	} else {
 		eval.GadgetProductSinglePAndBitDecompNoModDown(levelQ, cx, gadgetCt, ctTmp)
 	}
@@ -31,9 +33,8 @@ func (eval *Evaluator) GadgetProduct(levelQ int, cx *ring.Poly, gadgetCt GadgetC
 		eval.BasisExtender.ModDownQPtoQNTT(levelQ, levelP, ct.Value[0], ctTmp.Value[0].P, ct.Value[0])
 		eval.BasisExtender.ModDownQPtoQNTT(levelQ, levelP, ct.Value[1], ctTmp.Value[1].P, ct.Value[1])
 	} else if !ct.IsNTT {
-
-		eval.params.RingQ().InvNTTLazyLvl(levelQ, ct.Value[0], ct.Value[0])
-		eval.params.RingQ().InvNTTLazyLvl(levelQ, ct.Value[1], ct.Value[1])
+		eval.params.RingQ().InvNTTLvl(levelQ, ct.Value[0], ct.Value[0])
+		eval.params.RingQ().InvNTTLvl(levelQ, ct.Value[1], ct.Value[1])
 
 		if levelP != -1 {
 			eval.params.RingP().InvNTTLazyLvl(levelP, ctTmp.Value[0].P, ctTmp.Value[0].P)
@@ -212,5 +213,61 @@ func (eval *Evaluator) GadgetProductSinglePAndBitDecompNoModDown(levelQ int, cx 
 	if reduce%PiOverF != 0 {
 		ringP.ReduceLvl(levelP, ct.Value[0].P, ct.Value[0].P)
 		ringP.ReduceLvl(levelP, ct.Value[1].P, ct.Value[1].P)
+	}
+}
+
+// GadgetProductNoPNoModDown applies the key-switch to the polynomial cx:
+//
+// ct.Value[0] = dot(decomp(cx) * evakey[0]) mod Q
+// ct.Value[1] = dot(decomp(cx) * evakey[1]) mod Q
+//
+// when PCount = 0.
+// Expects the flag IsNTT of ct to correctly reflect the domain of cx.
+func (eval *Evaluator) GadgetProductNoPNoModDown(levelQ int, cx *ring.Poly, gadgetCt GadgetCiphertext, ct *Ciphertext) {
+
+	ringQ := eval.params.RingQ()
+
+	var cxInvNTT *ring.Poly
+	if ct.IsNTT {
+		cxInvNTT = eval.BuffInvNTT
+		ringQ.InvNTTLvl(levelQ, cx, cxInvNTT)
+	} else {
+		cxInvNTT = cx
+	}
+
+	cwNTT := eval.BuffBitDecomp
+
+	QiOverF := eval.params.QiOverflowMargin(levelQ) >> 1
+
+	el := gadgetCt.Value
+
+	// Key switching with CRT decomposition for the Qi
+	var reduce int
+	for i := 0; i < levelQ+1; i++ {
+		if i == 0 {
+			for u := 0; u < levelQ+1; u++ {
+				ringQ.NTTSingleLazy(u, cxInvNTT.Coeffs[i], cwNTT)
+				ring.MulCoeffsMontgomeryConstantVec(el[i][0].Value[0].Q.Coeffs[u], cwNTT, ct.Value[0].Coeffs[u], ringQ.Modulus[u], ringQ.MredParams[u])
+				ring.MulCoeffsMontgomeryConstantVec(el[i][0].Value[1].Q.Coeffs[u], cwNTT, ct.Value[1].Coeffs[u], ringQ.Modulus[u], ringQ.MredParams[u])
+			}
+		} else {
+			for u := 0; u < levelQ+1; u++ {
+				ringQ.NTTSingleLazy(u, cxInvNTT.Coeffs[i], cwNTT)
+				ring.MulCoeffsMontgomeryConstantAndAddNoModVec(el[i][0].Value[0].Q.Coeffs[u], cwNTT, ct.Value[0].Coeffs[u], ringQ.Modulus[u], ringQ.MredParams[u])
+				ring.MulCoeffsMontgomeryConstantAndAddNoModVec(el[i][0].Value[1].Q.Coeffs[u], cwNTT, ct.Value[1].Coeffs[u], ringQ.Modulus[u], ringQ.MredParams[u])
+			}
+		}
+
+		if reduce%QiOverF == QiOverF-1 {
+			ringQ.ReduceLvl(levelQ, ct.Value[0], ct.Value[0])
+			ringQ.ReduceLvl(levelQ, ct.Value[1], ct.Value[1])
+		}
+
+		reduce++
+	}
+
+	if reduce%QiOverF != 0 {
+		ringQ.ReduceLvl(levelQ, ct.Value[0], ct.Value[0])
+		ringQ.ReduceLvl(levelQ, ct.Value[1], ct.Value[1])
 	}
 }
