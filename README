@@ -1,6 +1,13 @@
-Initial Setup
-1. Run command "go mod vendor"
+# Matrix Triplet Generation
 
-Run Test & Write Test
-1. Modify "./hpbfv/hpbfv_test.go" file
-2. Run command "go test"
+Supplementary code for
+
+To test, run:
+```
+$ go test ./hpbfv
+```
+
+To benchmark, run:
+```
+$ go test ./hpbfv -run=^$ -bench=.
+```
