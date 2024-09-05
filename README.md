@@ -1,6 +1,6 @@
 # Matrix Triplet Generation
 
-Supplementary code for
+Supplementary code for TopGear 2.0.
 
 To test, run:
 ```
